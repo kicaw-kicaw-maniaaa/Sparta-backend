@@ -1,0 +1,514 @@
+// ============================================================================
+// COMPLETE PRISMA SCHEMA - Disaster Risk Management System
+// Version 2.0 - Enhanced with Gap Models
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+//////////////////////////////////////////////////////
+// AUTH & ROLE MANAGEMENT
+//////////////////////////////////////////////////////
+
+model Role {
+  id    Int    @id @default(autoincrement())
+  name  String @unique // warga, komunitas, admin_daerah, bpbd, superadmin
+
+  users User[]
+}
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+
+  roleId       Int
+  role         Role     @relation(fields: [roleId], references: [id])
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  reports              Report[]
+  auditLogs            AuditLog[]
+  validations          ReportValidation[] @relation("ValidatorRelation")
+  alerts               Alert[]
+  favoriteLocations    UserFavoriteLocation[]
+  notificationPrefs    UserNotificationPreference?
+}
+
+model UserNotificationPreference {
+  id                      Int       @id @default(autoincrement())
+  
+  userId                  String    @unique
+  user                    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  notifyOnStatusChange    Boolean   @default(true)
+  notifyThreshold         String    @default("siaga") // siaga, bahaya, all
+  notifyFrequency         String    @default("instant") // instant, daily_digest, weekly
+  
+  enablePushNotification  Boolean   @default(true)
+  enableInAppNotification Boolean   @default(true)
+  
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+}
+
+//////////////////////////////////////////////////////
+// LOCATION (CORE)
+//////////////////////////////////////////////////////
+
+model Location {
+  id        Int     @id @default(autoincrement())
+
+  latitude  Float
+  longitude Float
+
+  geom      String? @db.Text // GeoJSON Point
+
+  createdAt DateTime @default(now())
+
+  // Relations
+  reports         Report[]
+  weatherData     WeatherData[]
+  riskScores      RiskScoreLog[]
+  disasterEvents  DisasterEvent[]
+}
+
+//////////////////////////////////////////////////////
+// SPATIAL LAYERS (RTRW, RIVER, SLOPE, ETC)
+//////////////////////////////////////////////////////
+
+model SpatialLayer {
+  id        Int    @id @default(autoincrement())
+  name      String // rtrw, river, slope
+  type      String // polygon, line, raster
+
+  createdAt DateTime @default(now())
+
+  features  SpatialFeature[]
+}
+
+model SpatialFeature {
+  id        Int    @id @default(autoincrement())
+
+  layerId   Int
+  layer     SpatialLayer @relation(fields: [layerId], references: [id])
+
+  properties Json
+
+  geom      String? @db.Text // GeoJSON Geometry
+
+  createdAt DateTime @default(now())
+}
+
+//////////////////////////////////////////////////////
+// RTRW ZONE MAPPING (GAP MODEL #5)
+//////////////////////////////////////////////////////
+
+model RTRWZone {
+  id              Int       @id @default(autoincrement())
+  
+  code            String    @unique // e.g., "RTRW_001", "RDTR_101"
+  name            String
+  zoneType        String    // lindung, budidaya, budi_daya_lahan, pariwisata
+  
+  region          String    // desa, kecamatan, atau kabupaten
+  
+  geom            String? @db.Text // GeoJSON Polygon
+  
+  description     String?
+  source          String?   // Bappeda, Pemerintah_Daerah
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  // Relations
+  zoneGrids       RiskGridRTRWZone[]
+  violations      SpaceViolation[]
+  
+  @@index([region])
+  @@index([zoneType])
+}
+
+model RiskGridRTRWZone {
+  id              Int       @id @default(autoincrement())
+  
+  gridId          Int
+  grid            RiskGrid  @relation(fields: [gridId], references: [id], onDelete: Cascade)
+  
+  zoneId          Int
+  zone            RTRWZone  @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  
+  overlapArea     Float?    // Persen overlap atau m²
+  
+  createdAt       DateTime  @default(now())
+  
+  @@unique([gridId, zoneId])
+  @@index([gridId])
+  @@index([zoneId])
+}
+
+//////////////////////////////////////////////////////
+// WEATHER (TIME SERIES)
+//////////////////////////////////////////////////////
+
+model WeatherData {
+  id          Int      @id @default(autoincrement())
+
+  locationId  Int
+  location    Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  timestamp   DateTime
+
+  rainfallMm  Float?
+  humidity    Float?
+  windSpeed   Float?
+
+  source      String // BMKG
+
+  createdAt   DateTime @default(now())
+  
+  @@index([locationId])
+  @@index([timestamp])
+}
+
+//////////////////////////////////////////////////////
+// DISASTER EVENTS (HISTORICAL)
+//////////////////////////////////////////////////////
+
+model DisasterEvent {
+  id          Int      @id @default(autoincrement())
+
+  type        String   // banjir, longsor
+  date        DateTime
+
+  locationId  Int
+  location    Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  severity    Int?
+  description String?
+
+  source      String
+
+  createdAt   DateTime @default(now())
+  
+  @@index([locationId])
+  @@index([date])
+}
+
+//////////////////////////////////////////////////////
+// COMMUNITY REPORT
+//////////////////////////////////////////////////////
+
+model Report {
+  id          Int      @id @default(autoincrement())
+
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  locationId  Int
+  location    Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  type        String // genangan, longsor_kecil, retakan, saluran_mampet, dll
+  description String
+  photoUrl    String?
+
+  status      String // pending, valid, invalid
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  validations ReportValidation[]
+  
+  @@index([userId])
+  @@index([locationId])
+  @@index([status])
+}
+
+model ReportValidation {
+  id           Int      @id @default(autoincrement())
+
+  reportId     Int
+  report       Report   @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  validatorId  String
+  validator    User     @relation("ValidatorRelation", fields: [validatorId], references: [id], onDelete: Cascade)
+
+  status       String // sesuai, tidak_sesuai
+  notes        String?
+
+  createdAt    DateTime @default(now())
+  
+  @@index([reportId])
+  @@index([validatorId])
+}
+
+//////////////////////////////////////////////////////
+// REPORT AGGREGATION (GAP MODEL #3)
+//////////////////////////////////////////////////////
+
+model ReportAggregation {
+  id                Int       @id @default(autoincrement())
+  
+  gridId            Int
+  grid              RiskGrid  @relation(fields: [gridId], references: [id], onDelete: Cascade)
+  
+  windowStart       DateTime  // e.g., 30 days ago
+  windowEnd         DateTime  // now
+  
+  totalReports      Int       @default(0)
+  validReports      Int       @default(0)
+  invalidReports    Int       @default(0)
+  
+  reportFactor      Float     @default(0) // 0.0–1.0, agregated contribution to risk
+  
+  topReportTypes    Json?     // { "genangan": 5, "longsor_kecil": 2, ... }
+  
+  lastUpdated       DateTime  @default(now()) @updatedAt
+  
+  @@unique([gridId, windowStart, windowEnd])
+  @@index([gridId])
+  @@index([lastUpdated])
+}
+
+//////////////////////////////////////////////////////
+// RISK GRID (CORE ANALYTICS UNIT)
+//////////////////////////////////////////////////////
+
+model RiskGrid {
+  id        Int     @id @default(autoincrement())
+
+  // bounding box center
+  latitude  Float
+  longitude Float
+
+  geom      String? @db.Text // GeoJSON Polygon
+
+  region    String? // desa/kecamatan
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  riskLogs              RiskScoreLog[]
+  reportAggregations    ReportAggregation[]
+  statusChanges         RiskStatusChange[]
+  zoneRelations         RiskGridRTRWZone[]
+  violations            SpaceViolation[]
+  userFavorites         UserFavoriteLocation[]
+  alerts                Alert[]
+  
+  @@index([region])
+  @@index([latitude, longitude])
+}
+
+//////////////////////////////////////////////////////
+// RISK STATUS CHANGE (GAP MODEL #2)
+//////////////////////////////////////////////////////
+
+model RiskStatusChange {
+  id                Int       @id @default(autoincrement())
+  
+  gridId            Int
+  grid              RiskGrid  @relation(fields: [gridId], references: [id], onDelete: Cascade)
+  
+  previousCategory  String    // Aman, Waspada, Siaga, Bahaya
+  currentCategory   String
+  
+  previousScore     Float
+  currentScore      Float
+  
+  triggerFactor     String    // rainfall_spike, report_aggregation, slope_update, etc
+  
+  detectedAt        DateTime  @default(now())
+  
+  @@index([gridId])
+  @@index([detectedAt])
+}
+
+//////////////////////////////////////////////////////
+// RISK SCORE LOG (VERSIONING)
+//////////////////////////////////////////////////////
+
+model RiskScoreLog {
+  id          Int      @id @default(autoincrement())
+
+  gridId      Int
+  grid        RiskGrid @relation(fields: [gridId], references: [id], onDelete: Cascade)
+
+  locationId  Int?
+  location    Location? @relation(fields: [locationId], references: [id], onDelete: SetNull)
+
+  score       Float     // 0–100
+  category    String    // Aman/Waspada/Siaga/Bahaya
+
+  rainfall    Float?
+  slope       Float?
+  riverDist   Float?
+  historyFreq Float?
+  reportFactor Float?
+
+  statusChanged Boolean @default(false)
+
+  calculatedAt DateTime @default(now())
+  
+  @@index([gridId])
+  @@index([calculatedAt])
+  @@index([score])
+}
+
+//////////////////////////////////////////////////////
+// ALERT & NOTIFICATION (GAP MODEL #1)
+//////////////////////////////////////////////////////
+
+model UserFavoriteLocation {
+  id        Int       @id @default(autoincrement())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  gridId    Int
+  grid      RiskGrid  @relation(fields: [gridId], references: [id], onDelete: Cascade)
+  
+  name      String?   // "Kantor Pusat", "Rumah", dll
+  createdAt DateTime  @default(now())
+  
+  @@unique([userId, gridId])
+  @@index([userId])
+}
+
+model Alert {
+  id              Int       @id @default(autoincrement())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  gridId          Int
+  grid            RiskGrid  @relation(fields: [gridId], references: [id], onDelete: Cascade)
+  
+  type            String    // status_upgrade, threshold_breach, high_risk_area
+  title           String
+  description     String
+  
+  previousScore   Float?
+  currentScore    Float?
+  previousCategory String?
+  currentCategory  String?
+  
+  isRead          Boolean   @default(false)
+  readAt          DateTime?
+  dismissedAt     DateTime?
+  
+  createdAt       DateTime  @default(now())
+  
+  @@index([userId])
+  @@index([gridId])
+  @@index([isRead])
+  @@index([createdAt])
+}
+
+//////////////////////////////////////////////////////
+// SPACE VIOLATION DETECTION (GAP MODEL #5)
+//////////////////////////////////////////////////////
+
+model SpaceViolation {
+  id              Int       @id @default(autoincrement())
+  
+  gridId          Int
+  grid            RiskGrid  @relation(fields: [gridId], references: [id], onDelete: Cascade)
+  
+  zoneId          Int
+  zone            RTRWZone  @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  
+  violationType   String    // high_risk_in_protected, high_report_in_protected, etc
+  
+  riskScore       Float
+  reportCount30d  Int
+  
+  flaggedAt       DateTime  @default(now())
+  resolvedAt      DateTime?
+  resolvedBy      String?   // userId
+  
+  notes           String?
+  
+  @@index([gridId])
+  @@index([zoneId])
+  @@index([flaggedAt])
+}
+
+//////////////////////////////////////////////////////
+// EXTERNAL DATA INTEGRATION (GAP MODEL #4)
+//////////////////////////////////////////////////////
+
+model ExternalDataLog {
+  id              Int       @id @default(autoincrement())
+  
+  source          String    // BMKG, Google_Maps, Historical_DB
+  dataType        String    // rainfall, weather, disaster_history
+  
+  status          String    // success, failed, partial
+  
+  recordsProcessed Int      @default(0)
+  recordsError    Int       @default(0)
+  
+  errorMessage    String?
+  metadata        Json?     // Request params, response summary, etc.
+  
+  fetchedAt       DateTime
+  processedAt     DateTime  @default(now())
+  
+  @@index([source])
+  @@index([dataType])
+  @@index([processedAt])
+}
+
+model SchedulerLog {
+  id              Int       @id @default(autoincrement())
+  
+  jobName         String    // calculate_risk_scores, fetch_bmkg_rainfall
+  status          String    // success, failed, running
+  
+  startTime       DateTime
+  endTime         DateTime?
+  durationMs      Int?
+  
+  error           String?
+  
+  gridsCovered    Int?      // Berapa grid yang diproses
+  metadata        Json?
+  
+  createdAt       DateTime  @default(now())
+  
+  @@index([jobName])
+  @@index([status])
+  @@index([createdAt])
+}
+
+//////////////////////////////////////////////////////
+// AUDIT LOG (GOVERNANCE)
+//////////////////////////////////////////////////////
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  action    String   // UPDATE_RTRW, CALCULATE_RISK, CREATE_REPORT, VALIDATE_REPORT
+  entity    String   // table name
+  entityId  String?
+
+  metadata  Json?
+
+  createdAt DateTime @default(now())
+  
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}

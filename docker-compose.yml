@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  # PostgreSQL with PostGIS
+  postgres:
+    image: postgis/postgis:15-3.3
+    container_name: spartaguardia-postgres
+    environment:
+      POSTGRES_USER: spartaguardia
+      POSTGRES_PASSWORD: spartaguardia
+      POSTGRES_DB: spartaguardia
+      POSTGRES_INITDB_ARGS: "-E UTF8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - spartaguardia-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spartaguardia"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    container_name: spartaguardia-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - spartaguardia-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: redis-server --appendonly yes
+
+  # NestJS Backend App (optional, for production-like testing)
+  # Uncomment to run with Docker
+  # app:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: spartaguardia-app
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #   environment:
+  #     DATABASE_URL: postgresql://spartaguardia:spartaguardia@postgres:5432/spartaguardia
+  #     REDIS_HOST: redis
+  #     REDIS_PORT: 6379
+  #   ports:
+  #     - "3000:3000"
+  #   networks:
+  #     - spartaguardia-network
+  #   volumes:
+  #     - ./src:/app/src
+  #   command: npm run start:dev
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  spartaguardia-network:
+    driver: bridge
